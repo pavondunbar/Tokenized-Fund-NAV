@@ -1,0 +1,210 @@
+# =========================================================================
+# Tokenized Fund / NAV System — Docker Compose
+# =========================================================================
+# Trust Domains (Docker networks):
+#   internal  — Postgres only; no external egress
+#   backend   — Kafka + inter-service communication
+#   pricing   — Isolated NAV calculation engine
+# =========================================================================
+
+services:
+
+  # -----------------------------------------------------------------------
+  # INFRASTRUCTURE: PostgreSQL (append-only ledger)
+  # -----------------------------------------------------------------------
+  postgres:
+    image: postgres:15
+    container_name: fund-ledger-db
+    environment:
+      POSTGRES_DB: fund_ledger
+      POSTGRES_USER: ledger_user
+      POSTGRES_PASSWORD: ledger_pass
+    volumes:
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+      - pg_data:/var/lib/postgresql/data
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ledger_user -d fund_ledger"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # -----------------------------------------------------------------------
+  # INFRASTRUCTURE: Kafka + Zookeeper
+  # -----------------------------------------------------------------------
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    container_name: fund-zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    networks:
+      - backend
+
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: fund-kafka
+    depends_on:
+      - zookeeper
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server localhost:9092 > /dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+
+  # -----------------------------------------------------------------------
+  # CORE: Fund Service (only writer to ledger)
+  # -----------------------------------------------------------------------
+  fund-service:
+    build: ./fund-service
+    container_name: fund-service
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: fund_ledger
+      DB_USER: ledger_user
+      DB_PASSWORD: ledger_pass
+      COMPLIANCE_GATEWAY_URL: http://compliance-gateway:8000
+    networks:
+      - internal
+      - backend
+    restart: on-failure
+
+  # -----------------------------------------------------------------------
+  # OUTBOX: Publishes events from DB to Kafka
+  # -----------------------------------------------------------------------
+  outbox-publisher:
+    build: ./outbox
+    container_name: fund-outbox-publisher
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: fund_ledger
+      DB_USER: readonly_user
+      DB_PASSWORD: readonly_pass
+      KAFKA_BOOTSTRAP: kafka:9092
+    networks:
+      - internal
+      - backend
+    restart: on-failure
+
+  # -----------------------------------------------------------------------
+  # EVENT CONSUMER: Routes Kafka events to downstream services
+  # -----------------------------------------------------------------------
+  event-consumer:
+    build: ./event-consumer
+    container_name: fund-event-consumer
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: fund_ledger
+      DB_USER: readonly_user
+      DB_PASSWORD: readonly_pass
+      KAFKA_BOOTSTRAP: kafka:9092
+      NAV_ENGINE_URL: http://nav-engine:8001
+      TRANSFER_AGENT_URL: http://transfer-agent:8002
+    networks:
+      - internal
+      - backend
+    restart: on-failure
+
+  # -----------------------------------------------------------------------
+  # NAV ENGINE: Isolated pricing/NAV calculation
+  # -----------------------------------------------------------------------
+  nav-engine:
+    build: ./nav-engine
+    container_name: fund-nav-engine
+    environment:
+      NAV_ENGINE_PORT: 8001
+    networks:
+      - pricing
+      - backend
+    restart: on-failure
+
+  # -----------------------------------------------------------------------
+  # TRANSFER AGENT: Processes share registry operations
+  # -----------------------------------------------------------------------
+  transfer-agent:
+    build: ./transfer-agent
+    container_name: fund-transfer-agent
+    environment:
+      TRANSFER_AGENT_PORT: 8002
+    networks:
+      - backend
+    restart: on-failure
+
+  # -----------------------------------------------------------------------
+  # COMPLIANCE GATEWAY: KYC/AML screening
+  # -----------------------------------------------------------------------
+  compliance-gateway:
+    build: ./compliance-gateway
+    container_name: fund-compliance-gateway
+    environment:
+      COMPLIANCE_PORT: 8000
+    networks:
+      - backend
+    restart: on-failure
+
+  # -----------------------------------------------------------------------
+  # RECONCILIATION: Independent balance verification
+  # -----------------------------------------------------------------------
+  reconciliation:
+    build: ./reconciliation
+    container_name: fund-reconciliation
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: fund_ledger
+      DB_USER: readonly_user
+      DB_PASSWORD: readonly_pass
+      RECON_INTERVAL: 60
+    networks:
+      - internal
+    restart: on-failure
+
+
+# =========================================================================
+# NETWORKS — Trust Domain Isolation
+# =========================================================================
+networks:
+  internal:
+    driver: bridge
+    internal: true        # No external egress
+  backend:
+    driver: bridge
+  pricing:
+    driver: bridge
+    internal: true        # NAV engine isolated
+
+# =========================================================================
+# VOLUMES
+# =========================================================================
+volumes:
+  pg_data:

@@ -33,7 +33,8 @@ down: ## Stop and remove all containers and volumes
 
 demo: ## Rebuild and run the full demo lifecycle
 	docker compose down -v --remove-orphans
-	docker compose up --build --abort-on-container-exit fund-service
+	docker compose up --build --abort-on-container-exit \
+		fund-service outbox-publisher event-consumer
 
 logs: ## Tail all container logs
 	docker compose logs -f

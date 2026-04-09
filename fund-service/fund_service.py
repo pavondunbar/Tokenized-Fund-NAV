@@ -1690,6 +1690,27 @@ async def main():
     )
     logger.info("  Total Shares Outstanding: %s", total_shares)
 
+    # Wait for outbox-publisher to drain events to Kafka
+    logger.info(
+        "Waiting for outbox-publisher to deliver events "
+        "to Kafka..."
+    )
+    max_wait_seconds = 30
+    poll_interval = 2
+    elapsed = 0
+    while elapsed < max_wait_seconds:
+        pending = await db.fetchval(
+            "SELECT count(*) FROM outbox_events "
+            "WHERE published_at IS NULL",
+        )
+        if pending == 0:
+            break
+        logger.info(
+            "  %d events still pending, waiting...", pending,
+        )
+        await asyncio.sleep(poll_interval)
+        elapsed += poll_interval
+
     # Show outbox events
     events = await db.fetch(
         "SELECT event_type, delivery_status "

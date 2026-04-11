@@ -1034,12 +1034,28 @@ WHERE is_official = TRUE
 ORDER BY fund_id, nav_date DESC;
 
 -- 17f. Current settlement status
+-- Uses subqueries for tx_hash and block_number because these fields
+-- are set on different events (SIGNED vs CONFIRMED) in the pipeline.
+-- DISTINCT ON picks the latest event for status/reason/created_at,
+-- while the subqueries pull the most recent non-null value per field.
 CREATE VIEW settlement_current_status AS
-SELECT DISTINCT ON (settlement_id)
-    settlement_id, status, reason, tx_hash,
-    block_number, created_at
-FROM settlement_events
-ORDER BY settlement_id, created_at DESC;
+SELECT DISTINCT ON (se.settlement_id)
+    se.settlement_id,
+    se.status,
+    se.reason,
+    (SELECT tx_hash FROM settlement_events
+     WHERE settlement_id = se.settlement_id
+       AND tx_hash IS NOT NULL
+     ORDER BY created_at DESC
+     LIMIT 1) AS tx_hash,
+    (SELECT block_number FROM settlement_events
+     WHERE settlement_id = se.settlement_id
+       AND block_number IS NOT NULL
+     ORDER BY created_at DESC
+     LIMIT 1) AS block_number,
+    se.created_at
+FROM settlement_events se
+ORDER BY se.settlement_id, se.created_at DESC;
 
 -- 17g. MPC quorum status per settlement
 CREATE VIEW mpc_quorum_status AS

@@ -1,4 +1,7 @@
-# Tokenized Fund / NAV System (Python)
+# Tokenized Fund / NAV System
+
+<img width="1607" height="979" alt="tokenized-fund" src="https://github.com/user-attachments/assets/151fbe1f-0166-4c81-8b78-3a61dea95e39" />
+
 
 > **SANDBOX / EDUCATIONAL USE ONLY — NOT FOR PRODUCTION**
 > This codebase is a reference implementation designed for learning, prototyping, and architectural exploration. It is **not audited, not legally reviewed, and must not be used to manage real fund shares, calculate official NAVs, or process real investor subscriptions, redemptions, or transfers.** See the [Production Warning](#production-warning) section for full details.
